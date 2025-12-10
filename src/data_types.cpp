@@ -157,12 +157,10 @@ struct CompilerInfo
 
 #define MAX_TOKEN_LEN 40
 
-
-// added new token AMPERSAND for & operator for the scanner to consume
 enum TokenType{
                 IF, THEN, ELSE, END, REPEAT, UNTIL, READ, WRITE,
                 ASSIGN, EQUAL, LESS_THAN,
-                PLUS, MINUS, TIMES, DIVIDE, AMPERSAND, POWER, 
+                PLUS, MINUS, TIMES, DIVIDE, POWER,
                 SEMI_COLON,
                 LEFT_PAREN, RIGHT_PAREN,
                 LEFT_BRACE, RIGHT_BRACE,
@@ -175,7 +173,7 @@ const char* TokenTypeStr[]=
             {
                 "If", "Then", "Else", "End", "Repeat", "Until", "Read", "Write",
                 "Assign", "Equal", "LessThan",
-                "Plus", "Minus", "Times", "Divide", "Ampersand", "Power",
+                "Plus", "Minus", "Times", "Divide", "Power",
                 "SemiColon",
                 "LeftParen", "RightParen",
                 "LeftBrace", "RightBrace",
@@ -216,7 +214,6 @@ const Token symbolic_tokens[]=
     Token(MINUS, "-"),
     Token(TIMES, "*"),
     Token(DIVIDE, "/"),
-    Token(AMPERSAND, "&"), // new operator added (&)
     Token(POWER, "^"),
     Token(SEMI_COLON, ";"),
     Token(LEFT_PAREN, "("),
@@ -304,10 +301,10 @@ void GetNextToken(CompilerInfo* pci, Token* ptoken)
 // writestmt -> write expr
 // expr -> mathexpr [ (<|=) mathexpr ]
 // mathexpr -> term { (+|-) term }    left associative
-// term -> operand { (*|/) operand }    left associative
-// operand -> factfor { & factor }    right associative 
+// term -> factor { (*|/) factor }    left associative
 // factor -> newexpr { ^ newexpr }    right associative
 // newexpr -> ( mathexpr ) | number | identifier
+
 enum NodeKind{
                 IF_NODE, REPEAT_NODE, ASSIGN_NODE, READ_NODE, WRITE_NODE,
                 OPER_NODE, NUM_NODE, ID_NODE
@@ -407,8 +404,6 @@ TreeNode* NewExpr(CompilerInfo* pci, ParseInfo* ppi)
     return 0;
 }
 
-
-
 // factor -> newexpr { ^ newexpr }    right associative
 TreeNode* Factor(CompilerInfo* pci, ParseInfo* ppi)
 {
@@ -434,53 +429,12 @@ TreeNode* Factor(CompilerInfo* pci, ParseInfo* ppi)
     return tree;
 }
 
-
-
-
-
-//operand -> factor { & factor }    left associative 
-TreeNode* Operand(CompilerInfo* pci, ParseInfo* ppi)
-{
-    pci->debug_file.Out("Start Operand");
-
-    TreeNode* tree=Factor(pci, ppi);
-
-    // checking for multiple & operators (chained operands)
-    while(ppi->next_token.type==AMPERSAND)
-    {
-        // constructing new operator node
-        TreeNode* new_tree=new TreeNode;
-
-        //Setting up the new operator node and its token info
-        new_tree->node_kind=OPER_NODE;
-        new_tree->oper=ppi->next_token.type;
-        new_tree->line_num=pci->in_file.cur_line_num;
-
-        // building the parse tree bottom-up
-        // previous result becomes left child
-        new_tree->child[0]=tree;
-
-        //Get next & token
-        Match(pci, ppi, ppi->next_token.type);
-        
-        // getting the right child by parsing Factor again
-        new_tree->child[1]=Factor(pci, ppi);
-
-        pci->debug_file.Out("End Operand");
-        // updating treenode pointer to the new parent of the previous node
-        tree = new_tree;
-    }
-    pci->debug_file.Out("End Operand");
-    return tree;
-}
-
-
-// term -> operand { (*|/) operand }    left associative
+// term -> factor { (*|/) factor }    left associative
 TreeNode* Term(CompilerInfo* pci, ParseInfo* ppi)
 {
     pci->debug_file.Out("Start Term");
 
-    TreeNode* tree=Operand(pci, ppi);
+    TreeNode* tree=Factor(pci, ppi);
 
     while(ppi->next_token.type==TIMES || ppi->next_token.type==DIVIDE)
     {
@@ -491,7 +445,7 @@ TreeNode* Term(CompilerInfo* pci, ParseInfo* ppi)
 
         new_tree->child[0]=tree;
         Match(pci, ppi, ppi->next_token.type);
-        new_tree->child[1]=Operand(pci, ppi);
+        new_tree->child[1]=Factor(pci, ppi);
 
         tree=new_tree;
     }
@@ -885,10 +839,6 @@ int Power(int a, int b)
     return 0;
 }
 
-int DiffBetweenTwoSquares(int a, int b){
-    return a*a - b*b;
-}
-
 int Evaluate(TreeNode* node, SymbolTable* symbol_table, int* variables)
 {
     if(node->node_kind==NUM_NODE) return node->num;
@@ -904,7 +854,6 @@ int Evaluate(TreeNode* node, SymbolTable* symbol_table, int* variables)
     if(node->oper==TIMES) return a*b;
     if(node->oper==DIVIDE) return a/b;
     if(node->oper==POWER) return Power(a,b);
-    if(node->oper==AMPERSAND) return DiffBetweenTwoSquares(a,b); // new operator implementation
     throw 0;
     return 0;
 }
@@ -1008,63 +957,3 @@ int main()
 }
 
 ////////////////////////////////////////////////////////////////////////////////////
-
-
-/*
-    TEST CASES:
-    read x; 
-read y; 
-
-{ assuming x is four and y is 2}
-
-{ Test 1 Basic Difference of Squares }
-{  Expected result is twelve  }
-basic := x & y;
-write basic;
-
-{ Test 2 Precedence Add vs DiffSquares }
-{  Logic is ten plus the result of difference of squares  }
-{  Expected result is twenty two  }
-checkAdd := 10 + x & y;
-write checkAdd;
-
-{ Test 3 Precedence Multiply vs DiffSquares }
-{  Logic is three times the result of difference of squares  }
-{  Expected result is thirty six  }
-checkMult := 3 * x & y;
-write checkMult;
-
-{ Test 4 Precedence Power vs DiffSquares }
-{  Logic is power happens before difference of squares  }
-{  Expected result is nine  }
-checkPow := 5 & 2 ^ 2;
-write checkPow;
-
-{ Test 5 Associativity Check Left Associative }
-{  First operation yields sixteen  }
-{  Second operation yields two hundred fifty two  }
-{  Expected result is two hundred fifty two  }
-assoc := 5 & 3 & 2;
-write assoc;
-
-{ Test 6 Control Flow }
-{ Expected result is one }
-h := x&y;
-if 10 < h then
-  write 1 
-else
-  write 0
-end;
-
-{ Test 7 Complex Chain }
-{ Expected results are twenty nine then twenty eight then twenty seven then twenty six then twenty five }
-
-i :=5;
-repeat
-  complex :=i+2*x&y;
-  i := i-1;
-  write complex
-until i=0
-end
-
-*/
