@@ -13,7 +13,7 @@ read x; {input an integer}
 if 0<x then {compute only if x>=1}
   fact:=1;
   repeat
-    fact := fact * x;
+    fact := fact * x; 
     x:=x-1
   until x=0;
   write fact {output factorial}
@@ -164,7 +164,8 @@ enum TokenType{
                 SEMI_COLON,
                 LEFT_PAREN, RIGHT_PAREN,
                 LEFT_BRACE, RIGHT_BRACE,
-                ID, NUM,
+                ID, NUM, REAL_NUM,
+                INT, REAL, BOOL,
                 ENDFILE, ERROR
               };
 
@@ -177,7 +178,8 @@ const char* TokenTypeStr[]=
                 "SemiColon",
                 "LeftParen", "RightParen",
                 "LeftBrace", "RightBrace",
-                "ID", "Num",
+                "ID", "Num", "RealNum",
+                "Int", "Real", "Bool",
                 "EndFile", "Error"
             };
 
@@ -199,7 +201,10 @@ const Token reserved_words[]=
     Token(REPEAT, "repeat"),
     Token(UNTIL, "until"),
     Token(READ, "read"),
-    Token(WRITE, "write")
+    Token(WRITE, "write"),
+    Token(INT, "int"),
+    Token(REAL, "real"),
+    Token(BOOL, "bool")
 };
 const int num_reserved_words=sizeof(reserved_words)/sizeof(reserved_words[0]);
 
@@ -261,9 +266,17 @@ void GetNextToken(CompilerInfo* pci, Token* ptoken)
     else if(IsDigit(s[0]))
     {
         int j=1;
+        bool is_real=false;
         while(IsDigit(s[j])) j++;
+        
+        if(s[j]=='.')
+        {
+            is_real=true;
+            j++;
+            while(IsDigit(s[j])) j++;
+        }
 
-        ptoken->type=NUM;
+        ptoken->type=is_real ? REAL_NUM : NUM;
         Copy(ptoken->str, s, j);
     }
     else if(IsLetterOrUnderscore(s[0]))
@@ -293,9 +306,10 @@ void GetNextToken(CompilerInfo* pci, Token* ptoken)
 
 // program -> stmtseq
 // stmtseq -> stmt { ; stmt }
-// stmt -> ifstmt | repeatstmt | assignstmt | readstmt | writestmt
+// stmt -> declarestmt | ifstmt | repeatstmt | assignstmt | readstmt | writestmt 
 // ifstmt -> if exp then stmtseq [ else stmtseq ] end
 // repeatstmt -> repeat stmtseq until expr
+// declarestmt -> (int|real|bool) identifier ;
 // assignstmt -> identifier := expr
 // readstmt -> read identifier
 // writestmt -> write expr
@@ -307,22 +321,22 @@ void GetNextToken(CompilerInfo* pci, Token* ptoken)
 
 enum NodeKind{
                 IF_NODE, REPEAT_NODE, ASSIGN_NODE, READ_NODE, WRITE_NODE,
-                OPER_NODE, NUM_NODE, ID_NODE
+                OPER_NODE, NUM_NODE, ID_NODE, DECLARE_NODE, REAL_NUM_NODE
              };
 
 // Used for debugging only /////////////////////////////////////////////////////////
 const char* NodeKindStr[]=
             {
                 "If", "Repeat", "Assign", "Read", "Write",
-                "Oper", "Num", "ID"
+                "Oper", "Num", "ID", "Declare", "RealNum"
             };
 
-enum ExprDataType {VOID, INTEGER, BOOLEAN};
+enum ExprDataType {VOID, INTEGER, REAL_TYPE, BOOLEAN};
 
 // Used for debugging only /////////////////////////////////////////////////////////
 const char* ExprDataTypeStr[]=
             {
-                "Void", "Integer", "Boolean"
+                "Void", "Integer", "Real", "Boolean"
             };
 
 #define MAX_CHILDREN 3
@@ -334,12 +348,13 @@ struct TreeNode
 
     NodeKind node_kind;
 
-    union{TokenType oper; int num; char* id;}; // defined for expression/int/identifier only
+    union{TokenType oper; int num; double real_num; char* id;}; // defined for expression/int/identifier only
     ExprDataType expr_data_type; // defined for expression/int/identifier only
+    TokenType decl_type; // for DECLARE_NODE: INT, REAL, or BOOL
 
     int line_num;
 
-    TreeNode() {int i; for(i=0;i<MAX_CHILDREN;i++) child[i]=0; sibling=0; expr_data_type=VOID;}
+    TreeNode() {int i; for(i=0;i<MAX_CHILDREN;i++) child[i]=0; sibling=0; expr_data_type=VOID; decl_type=ERROR;}
 };
 
 struct ParseInfo
@@ -371,6 +386,18 @@ TreeNode* NewExpr(CompilerInfo* pci, ParseInfo* ppi)
         tree->node_kind=NUM_NODE;
         char* num_str=ppi->next_token.str;
         tree->num=0; while(*num_str) tree->num=tree->num*10+((*num_str++)-'0');
+        tree->line_num=pci->in_file.cur_line_num;
+        Match(pci, ppi, ppi->next_token.type);
+
+        pci->debug_file.Out("End NewExpr");
+        return tree;
+    }
+
+    if(ppi->next_token.type==REAL_NUM)
+    {
+        TreeNode* tree=new TreeNode;
+        tree->node_kind=REAL_NUM_NODE;
+        tree->real_num=atof(ppi->next_token.str);
         tree->line_num=pci->in_file.cur_line_num;
         Match(pci, ppi, ppi->next_token.type);
 
@@ -554,6 +581,24 @@ TreeNode* AssignStmt(CompilerInfo* pci, ParseInfo* ppi)
 
 TreeNode* StmtSeq(CompilerInfo*, ParseInfo*);
 
+// declarestmt -> (int|real|bool) identifier ;
+TreeNode* DeclareStmt(CompilerInfo* pci, ParseInfo* ppi)
+{
+    pci->debug_file.Out("Start DeclareStmt");
+
+    TreeNode* tree=new TreeNode;
+    tree->node_kind=DECLARE_NODE;
+    tree->line_num=pci->in_file.cur_line_num;
+    tree->decl_type=ppi->next_token.type;
+
+    Match(pci, ppi, ppi->next_token.type); // INT, REAL, or BOOL
+    if(ppi->next_token.type==ID) AllocateAndCopy(&tree->id, ppi->next_token.str);
+    Match(pci, ppi, ID);
+
+    pci->debug_file.Out("End DeclareStmt");
+    return tree;
+}
+
 // repeatstmt -> repeat stmtseq until expr
 TreeNode* RepeatStmt(CompilerInfo* pci, ParseInfo* ppi)
 {
@@ -588,14 +633,15 @@ TreeNode* IfStmt(CompilerInfo* pci, ParseInfo* ppi)
     return tree;
 }
 
-// stmt -> ifstmt | repeatstmt | assignstmt | readstmt | writestmt
+// stmt -> declarestmt | ifstmt | repeatstmt | assignstmt | readstmt | writestmt
 TreeNode* Stmt(CompilerInfo* pci, ParseInfo* ppi)
 {
     pci->debug_file.Out("Start Stmt");
 
     // Compare the next token with the First() of possible statements
     TreeNode* tree=0;
-    if(ppi->next_token.type==IF) tree=IfStmt(pci, ppi);
+    if(ppi->next_token.type==INT || ppi->next_token.type==REAL || ppi->next_token.type==BOOL) tree=DeclareStmt(pci, ppi);
+    else if(ppi->next_token.type==IF) tree=IfStmt(pci, ppi);
     else if(ppi->next_token.type==REPEAT) tree=RepeatStmt(pci, ppi);
     else if(ppi->next_token.type==ID) tree=AssignStmt(pci, ppi);
     else if(ppi->next_token.type==READ) tree=ReadStmt(pci, ppi);
@@ -651,7 +697,9 @@ void PrintTree(TreeNode* node, int sh=0)
 
     if(node->node_kind==OPER_NODE) printf("[%s]", TokenTypeStr[node->oper]);
     else if(node->node_kind==NUM_NODE) printf("[%d]", node->num);
+    else if(node->node_kind==REAL_NUM_NODE) printf("[%f]", node->real_num);
     else if(node->node_kind==ID_NODE || node->node_kind==READ_NODE || node->node_kind==ASSIGN_NODE) printf("[%s]", node->id);
+    else if(node->node_kind==DECLARE_NODE) printf("[%s][%s]", TokenTypeStr[node->decl_type], node->id);
 
     if(node->expr_data_type!=VOID) printf("[%s]", ExprDataTypeStr[node->expr_data_type]);
 
@@ -665,7 +713,7 @@ void DestroyTree(TreeNode* node)
 {
     int i;
 
-    if(node->node_kind==ID_NODE || node->node_kind==READ_NODE || node->node_kind==ASSIGN_NODE)
+    if(node->node_kind==ID_NODE || node->node_kind==READ_NODE || node->node_kind==ASSIGN_NODE || node->node_kind==DECLARE_NODE)
         if(node->id) delete[] node->id;
 
     for(i=0;i<MAX_CHILDREN;i++) if(node->child[i]) DestroyTree(node->child[i]);
@@ -684,11 +732,12 @@ struct LineLocation
     int line_num;
     LineLocation* next;
 };
-
 struct VariableInfo
 {
     char* name;
     int memloc;
+    ExprDataType var_type; // INTEGER, REAL_TYPE, or BOOLEAN
+    bool is_declared;
     LineLocation* head_line; // the head of linked list of source line locations
     LineLocation* tail_line; // the tail of linked list of source line locations
     VariableInfo* next_var; // the next variable in the linked list in the same hash bucket of the symbol table
@@ -721,7 +770,7 @@ struct SymbolTable
         return 0;
     }
 
-    void Insert(const char* name, int line_num)
+    void Insert(const char* name, int line_num, ExprDataType type=VOID)
     {
         LineLocation* lineloc=new LineLocation;
         lineloc->line_num=line_num;
@@ -730,7 +779,7 @@ struct SymbolTable
         int h=Hash(name);
         VariableInfo* prev=0;
         VariableInfo* cur=var_info[h];
-
+    
         while(cur)
         {
             if(Equals(name, cur->name))
@@ -748,10 +797,31 @@ struct SymbolTable
         vi->head_line=vi->tail_line=lineloc;
         vi->next_var=0;
         vi->memloc=num_vars++;
+        vi->var_type=type;
+        vi->is_declared=(type!=VOID);
         AllocateAndCopy(&vi->name, name);
 
         if(!prev) var_info[h]=vi;
         else prev->next_var=vi;
+    }
+
+    void Declare(const char* name, ExprDataType type, int line_num)
+    {
+        VariableInfo* vi=Find(name);
+        if(vi)
+        {
+            if(vi->is_declared)
+            {
+                printf("ERROR: Variable '%s' already declared at line %d\n", name, line_num);
+                throw 0;
+            }
+            vi->var_type=type;
+            vi->is_declared=true;
+        }
+        else
+        {
+            Insert(name, line_num, type);
+        }
     }
 
     void Print()
@@ -762,7 +832,7 @@ struct SymbolTable
             VariableInfo* curv=var_info[i];
             while(curv)
             {
-                printf("[Var=%s][Mem=%d]", curv->name, curv->memloc);
+                printf("[Var=%s][Type=%s][Mem=%d]", curv->name, ExprDataTypeStr[curv->var_type], curv->memloc);
                 LineLocation* curl=curv->head_line;
                 while(curl)
                 {
@@ -803,27 +873,141 @@ void Analyze(TreeNode* node, SymbolTable* symbol_table)
 {
     int i;
 
+    // Handle declarations
+    if(node->node_kind==DECLARE_NODE)
+    {
+        ExprDataType type=VOID;
+        if(node->decl_type==INT) type=INTEGER;
+        else if(node->decl_type==REAL) type=REAL_TYPE;
+        else if(node->decl_type==BOOL) type=BOOLEAN;
+        symbol_table->Declare(node->id, type, node->line_num);
+    }
+    
+    // Handle variable references
     if(node->node_kind==ID_NODE || node->node_kind==READ_NODE || node->node_kind==ASSIGN_NODE)
         symbol_table->Insert(node->id, node->line_num);
 
+    // Recursively analyze children
     for(i=0;i<MAX_CHILDREN;i++) if(node->child[i]) Analyze(node->child[i], symbol_table);
 
-    if(node->node_kind==OPER_NODE)
+    // Determine expression types
+    if(node->node_kind==NUM_NODE) 
+        node->expr_data_type=INTEGER;
+    else if(node->node_kind==REAL_NUM_NODE) 
+        node->expr_data_type=REAL_TYPE;
+    else if(node->node_kind==ID_NODE)
     {
-        if(node->oper==EQUAL || node->oper==LESS_THAN) node->expr_data_type=BOOLEAN;
-        else node->expr_data_type=INTEGER;
+        VariableInfo* vi=symbol_table->Find(node->id);
+        if(!vi)
+        {
+            printf("ERROR: Variable '%s' used but not declared at line %d\n", node->id, node->line_num);
+            throw 0;
+        }
+        if(!vi->is_declared)
+        {
+            printf("ERROR: Variable '%s' used before declaration at line %d\n", node->id, node->line_num);
+            throw 0;
+        }
+        node->expr_data_type=vi->var_type;
     }
-    else if(node->node_kind==ID_NODE || node->node_kind==NUM_NODE) node->expr_data_type=INTEGER;
+    else if(node->node_kind==OPER_NODE)
+    {
+        if(node->oper==EQUAL || node->oper==LESS_THAN)
+        {
+            // Comparison operators
+            ExprDataType left=node->child[0]->expr_data_type;
+            ExprDataType right=node->child[1]->expr_data_type;
+            
+            if(left==BOOLEAN || right==BOOLEAN)
+            {
+                printf("ERROR: cannot compare boolean values at line %d\n", node->line_num);
+                throw 0;
+            }
+            node->expr_data_type=BOOLEAN;
+        }
+        else
+        {
+            // Arithmetic operators
+            ExprDataType left=node->child[0]->expr_data_type;
+            ExprDataType right=node->child[1]->expr_data_type;
+            
+            if(left==BOOLEAN || right==BOOLEAN)
+            {
+                printf("ERROR: Cannot perform arithmetic on boolean values at line %d\n", node->line_num);
+                throw 0;
+            }
+            
+            // If either operand is REAL, result is REAL
+            if(left==REAL_TYPE || right==REAL_TYPE)
+                node->expr_data_type=REAL_TYPE;
+            else
+                node->expr_data_type=INTEGER;
+        }
+    }
 
-    if(node->node_kind==OPER_NODE)
+    // Type checking for statements
+    if(node->node_kind==IF_NODE)
     {
-        if(node->child[0]->expr_data_type!=INTEGER || node->child[1]->expr_data_type!=INTEGER)
-            printf("ERROR Operator applied to non-integers\n");
+        if(node->child[0]->expr_data_type!=BOOLEAN)
+        {
+            printf("ERROR: If condition must be BOOLEAN at line %d\n", node->line_num);
+            throw 0;
+        }
     }
-    if(node->node_kind==IF_NODE && node->child[0]->expr_data_type!=BOOLEAN) printf("ERROR If test must be BOOLEAN\n");
-    if(node->node_kind==REPEAT_NODE && node->child[1]->expr_data_type!=BOOLEAN) printf("ERROR Repeat test must be BOOLEAN\n");
-    if(node->node_kind==WRITE_NODE && node->child[0]->expr_data_type!=INTEGER) printf("ERROR Write works only for INTEGER\n");
-    if(node->node_kind==ASSIGN_NODE && node->child[0]->expr_data_type!=INTEGER) printf("ERROR Assign works only for INTEGER\n");
+    
+    if(node->node_kind==REPEAT_NODE)
+    {
+        if(node->child[1]->expr_data_type!=BOOLEAN)
+        {
+            printf("ERROR: Repeat condition must be BOOLEAN at line %d\n", node->line_num);
+            throw 0;
+        }
+    }
+    
+    if(node->node_kind==ASSIGN_NODE)
+    {
+        VariableInfo* vi=symbol_table->Find(node->id);
+        if(!vi || !vi->is_declared)
+        {
+            printf("ERROR: Cannot assign to undeclared variable '%s' at line %d\n", node->id, node->line_num);
+            throw 0;
+        }
+        
+        ExprDataType var_type=vi->var_type;
+        ExprDataType expr_type=node->child[0]->expr_data_type;
+
+        // Check type compatibility
+        if(var_type!=expr_type)
+        {
+            // Allow int to real conversion in assignment
+            if(!(var_type==REAL_TYPE && expr_type==INTEGER || var_type==INTEGER && expr_type==REAL_TYPE)) //here
+            {
+                printf("ERROR: Type mismatch in assignment to '%s' at line %d. Expected %s but got %s\n", 
+                       node->id, node->line_num, ExprDataTypeStr[var_type], ExprDataTypeStr[expr_type]);
+                throw 0;
+            }
+        }
+    }
+    
+    if(node->node_kind==READ_NODE)
+    {
+        VariableInfo* vi=symbol_table->Find(node->id);
+        if(!vi || !vi->is_declared)
+        {
+            printf("ERROR: Cannot read into undeclared variable '%s' at line %d\n", node->id, node->line_num);
+            throw 0;
+        }
+    }
+    
+    if(node->node_kind==WRITE_NODE)
+    {
+        ExprDataType type=node->child[0]->expr_data_type;
+        if(type!=INTEGER && type!=REAL_TYPE)
+        {
+            printf("ERROR: Write statement requires INTEGER or REAL expression at line %d\n", node->line_num);
+            throw 0;
+        }
+    }
 
     if(node->sibling) Analyze(node->sibling, symbol_table);
 }
@@ -839,66 +1023,142 @@ int Power(int a, int b)
     return 0;
 }
 
-int Evaluate(TreeNode* node, SymbolTable* symbol_table, int* variables)
+struct Value
 {
-    if(node->node_kind==NUM_NODE) return node->num;
-    if(node->node_kind==ID_NODE) return variables[symbol_table->Find(node->id)->memloc];
+    ExprDataType type;
+    union {int int_val; double real_val; bool bool_val;};
+    
+    Value() : type(VOID), int_val(0) {}
+    Value(int v) : type(INTEGER), int_val(v) {}
+    Value(double v) : type(REAL_TYPE), real_val(v) {}
+    Value(bool v) : type(BOOLEAN), bool_val(v) {}
+};
 
-    int a=Evaluate(node->child[0], symbol_table, variables);
-    int b=Evaluate(node->child[1], symbol_table, variables);
+Value Evaluate(TreeNode* node, SymbolTable* symbol_table, int* int_vars, double* real_vars, bool* bool_vars)
+{
+    if(node->node_kind==NUM_NODE) return Value(node->num);
+    if(node->node_kind==REAL_NUM_NODE) return Value(node->real_num);
+    
+    if(node->node_kind==ID_NODE)
+    {
+        VariableInfo* vi=symbol_table->Find(node->id);
+        if(vi->var_type==INTEGER) return Value(int_vars[vi->memloc]);
+        if(vi->var_type==REAL_TYPE) return Value(real_vars[vi->memloc]);
+        if(vi->var_type==BOOLEAN) return Value(bool_vars[vi->memloc]);
+    }
 
-    if(node->oper==EQUAL) return a==b;
-    if(node->oper==LESS_THAN) return a<b;
-    if(node->oper==PLUS) return a+b;
-    if(node->oper==MINUS) return a-b;
-    if(node->oper==TIMES) return a*b;
-    if(node->oper==DIVIDE) return a/b;
-    if(node->oper==POWER) return Power(a,b);
-    throw 0;
-    return 0;
+    Value a=Evaluate(node->child[0], symbol_table, int_vars, real_vars, bool_vars);
+    Value b=Evaluate(node->child[1], symbol_table, int_vars, real_vars, bool_vars);
+
+    if(node->oper==EQUAL || node->oper==LESS_THAN)
+    {
+        double val_a=(a.type==INTEGER ? a.int_val : a.real_val);
+        double val_b=(b.type==INTEGER ? b.int_val : b.real_val);
+        
+        if(node->oper==EQUAL) return Value(val_a==val_b);
+        if(node->oper==LESS_THAN) return Value(val_a<val_b);
+    }
+    
+    // Arithmetic operations
+    bool result_is_real=(a.type==REAL_TYPE || b.type==REAL_TYPE);
+    double val_a=(a.type==INTEGER ? a.int_val : a.real_val);
+    double val_b=(b.type==INTEGER ? b.int_val : b.real_val);
+    
+    double result=0;
+    if(node->oper==PLUS) result=val_a+val_b;
+    else if(node->oper==MINUS) result=val_a-val_b;
+    else if(node->oper==TIMES) result=val_a*val_b;
+    else if(node->oper==DIVIDE) result=val_a/val_b;
+    else if(node->oper==POWER)
+    {
+        result=1;
+        int exp=(int)val_b;
+        for(int i=0;i<exp;i++) result*=val_a;
+    }
+    
+    if(result_is_real) return Value(result);
+    else return Value((int)result);
 }
 
-void RunProgram(TreeNode* node, SymbolTable* symbol_table, int* variables)
+void RunProgram(TreeNode* node, SymbolTable* symbol_table, int* int_vars, double* real_vars, bool* bool_vars)
 {
-    if(node->node_kind==IF_NODE)
+    if(node->node_kind==DECLARE_NODE)
     {
-        int cond=Evaluate(node->child[0], symbol_table, variables);
-        if(cond) RunProgram(node->child[1], symbol_table, variables);
-        else if(node->child[2]) RunProgram(node->child[2], symbol_table, variables);
+        // Nothing to do at runtime for declarations
     }
-    if(node->node_kind==ASSIGN_NODE)
+    else if(node->node_kind==IF_NODE)
     {
-        int v=Evaluate(node->child[0], symbol_table, variables);
-        variables[symbol_table->Find(node->id)->memloc]=v;
+        Value cond=Evaluate(node->child[0], symbol_table, int_vars, real_vars, bool_vars);
+        if(cond.bool_val) RunProgram(node->child[1], symbol_table, int_vars, real_vars, bool_vars);
+        else if(node->child[2]) RunProgram(node->child[2], symbol_table, int_vars, real_vars, bool_vars);
     }
-    if(node->node_kind==READ_NODE)
+    else if(node->node_kind==ASSIGN_NODE)
     {
+        Value v=Evaluate(node->child[0], symbol_table, int_vars, real_vars, bool_vars);
+        VariableInfo* vi=symbol_table->Find(node->id);
+        
+        if(vi->var_type==INTEGER)
+            int_vars[vi->memloc]=(v.type==INTEGER ? v.int_val : (int)v.real_val);
+        else if(vi->var_type==REAL_TYPE)
+            real_vars[vi->memloc]=(v.type==REAL_TYPE ? v.real_val : (double)v.int_val);
+        else if(vi->var_type==BOOLEAN)
+            bool_vars[vi->memloc]=v.bool_val;
+    }
+    else if(node->node_kind==READ_NODE)
+    {
+        VariableInfo* vi=symbol_table->Find(node->id);
         printf("Enter %s: ", node->id);
-        scanf("%d", &variables[symbol_table->Find(node->id)->memloc]);
+        
+        if(vi->var_type==INTEGER)
+            scanf("%d", &int_vars[vi->memloc]);
+        else if(vi->var_type==REAL_TYPE)
+            scanf("%lf", &real_vars[vi->memloc]);
+        else if(vi->var_type==BOOLEAN)
+        {
+            int b;
+            scanf("%d", &b);
+            bool_vars[vi->memloc]=(b!=0);
+        }
     }
-    if(node->node_kind==WRITE_NODE)
+    else if(node->node_kind==WRITE_NODE)
     {
-        int v=Evaluate(node->child[0], symbol_table, variables);
-        printf("Val: %d\n", v);
+        Value v=Evaluate(node->child[0], symbol_table, int_vars, real_vars, bool_vars);
+        if(v.type==INTEGER)
+            printf("Val: %d\n", v.int_val);
+        else if(v.type==REAL_TYPE)
+            printf("Val: %f\n", v.real_val);
     }
-    if(node->node_kind==REPEAT_NODE)
+    else if(node->node_kind==REPEAT_NODE)
     {
         do
         {
-           RunProgram(node->child[0], symbol_table, variables);
+           RunProgram(node->child[0], symbol_table, int_vars, real_vars, bool_vars);
         }
-        while(!Evaluate(node->child[1], symbol_table, variables));
+        while(!Evaluate(node->child[1], symbol_table, int_vars, real_vars, bool_vars).bool_val);
     }
-    if(node->sibling) RunProgram(node->sibling, symbol_table, variables);
+    
+    if(node->sibling) RunProgram(node->sibling, symbol_table, int_vars, real_vars, bool_vars);
 }
 
 void RunProgram(TreeNode* syntax_tree, SymbolTable* symbol_table)
 {
     int i;
-    int* variables=new int[symbol_table->num_vars];
-    for(i=0;i<symbol_table->num_vars;i++) variables[i]=0;
-    RunProgram(syntax_tree, symbol_table, variables);
-    delete[] variables;
+    int* int_vars=new int[symbol_table->num_vars];
+    double* real_vars=new double[symbol_table->num_vars];
+    bool* bool_vars=new bool[symbol_table->num_vars];
+    
+    for(i=0;i<symbol_table->num_vars;i++)
+    {
+        int_vars[i]=0;
+        real_vars[i]=0.0;
+        bool_vars[i]=false;
+    }
+    
+    RunProgram(syntax_tree, symbol_table, int_vars, real_vars, bool_vars);
+    
+    delete[] int_vars;
+    delete[] real_vars;
+    delete[] bool_vars;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////
