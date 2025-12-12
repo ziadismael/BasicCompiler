@@ -1082,11 +1082,7 @@ Value Evaluate(TreeNode* node, SymbolTable* symbol_table, int* int_vars, double*
 
 void RunProgram(TreeNode* node, SymbolTable* symbol_table, int* int_vars, double* real_vars, bool* bool_vars)
 {
-    if(node->node_kind==DECLARE_NODE)
-    {
-        // Nothing to do at runtime for declarations
-    }
-    else if(node->node_kind==IF_NODE)
+    if(node->node_kind==IF_NODE)
     {
         Value cond=Evaluate(node->child[0], symbol_table, int_vars, real_vars, bool_vars);
         if(cond.bool_val) RunProgram(node->child[1], symbol_table, int_vars, real_vars, bool_vars);
@@ -1217,3 +1213,104 @@ int main()
 }
 
 ////////////////////////////////////////////////////////////////////////////////////
+
+
+/*
+    int x;
+int y;
+int z;
+real a;
+real b;
+real c;
+bool flag;
+bool check;
+
+{ Case 1: Integer Assignment }
+x := 10;
+write x;
+
+{ Case 2: Integer Assignment }
+y := 2;
+write y;
+
+{ Case 3: Real Assignment }
+a := 5.5;
+write a;
+
+{ Case 4: Real Assignment }
+b := 2.0;
+write b;
+
+{ Case 5: Boolean Assignment via Comparison (<) }
+{ Validates that comparison returns a boolean type }
+flag := x < y;
+{ write flag; }
+
+{ Case 6: Boolean Assignment via Equality (=) }
+check := x = 10;
+
+{ Case 7: Integer Addition }
+z := x + y;
+write z;
+
+{ Case 8: Integer Subtraction }
+z := x - y;
+write z;
+
+{ Case 9: Integer Multiplication }
+z := x * y;
+write z;
+
+{ Case 10: Integer Division }
+z := x / y;
+write z;
+
+{ Case 11: Real Arithmetic }
+c := a + b;
+write c;
+
+{ Case 12: Mixed Mode Addition (Int + Real) }
+{ 'x' (int) should convert to real to match 'a' }
+c := x + a;
+write c;
+
+{ Case 13: Mixed Mode Multiplication (Real * Int) }
+{ 'y' (int) should convert to real }
+c := a * y;
+write c;
+
+{ Case 14: Operator Precedence (Multiplication over Addition) }
+{ 10 + 2 * 3 = 16 (not 36) }
+z := x + y * 3;
+write z;
+
+{ Case 15: Operator Precedence (Parentheses) }
+{ (10 + 2) * 3 = 36 }
+z := (x + y) * 3;
+write z;
+
+{ Case 16: Right Associativity of Power (^) }
+{ 2 ^ 3 ^ 2 should correspond to 2 ^ 9 = 512 }
+z := 2 ^ 3 ^ 2;
+write z;
+
+{ Case 17: Complex Mixed Expression }
+{ (Real + Int) / Real }
+c := (a + x) / b;
+write c;
+
+{ Case 18: If-Statement with Boolean Variable }
+if check then
+  write x
+end;
+
+{ Case 19: Write Statement with Expression }
+write x + y;
+
+
+{ Case 20: Repeat-Until with Boolean Expression }
+repeat
+  write x;
+  x := x - 1
+until x < 0
+*/
